@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cloud providers use https. Plain http is allowed so a local Ollama/LM Studio on your Wi-Fi works;
+     the app warns if a public server is configured without https. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

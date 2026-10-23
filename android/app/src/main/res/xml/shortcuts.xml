@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="write" android:enabled="true" android:icon="@drawable/ic_tile" android:shortcutShortLabel="@string/shortcut_write">
+        <intent android:action="com.typepilot.android.REWRITE" android:targetPackage="com.typepilot.android"
+            android:targetClass="com.typepilot.android.rewrite.RewriteActivity">
+            <extra android:name="tab" android:value="write" />
+        </intent>
+    </shortcut>
+    <shortcut android:shortcutId="insights" android:enabled="true" android:icon="@drawable/ic_tile" android:shortcutShortLabel="@string/shortcut_insights">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="com.typepilot.android"
+            android:targetClass="com.typepilot.android.ui.MainActivity">
+            <extra android:name="tab" android:value="insights" />
+        </intent>
+    </shortcut>
+    <shortcut android:shortcutId="memory" android:enabled="true" android:icon="@drawable/ic_tile" android:shortcutShortLabel="@string/shortcut_memory">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="com.typepilot.android"
+            android:targetClass="com.typepilot.android.ui.MainActivity">
+            <extra android:name="tab" android:value="memory" />
+        </intent>
+    </shortcut>
+</shortcuts>

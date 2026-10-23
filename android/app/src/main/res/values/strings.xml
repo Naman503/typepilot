@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TypePilot</string>
+    <string name="accessibility_label">TypePilot AI suggestions</string>
+    <string name="accessibility_description">Shows AI suggestions and a ✦ Rewrite button on top of the app you\'re typing in, with any keyboard. TypePilot reads the text field you are typing in (never password fields) and nearby text on screen to make suggestions, and inserts the text you tap. Text is sent only to the AI provider you choose, or stays on your phone with an on-device model.</string>
+    <string name="accessibility_summary">AI autocomplete and rewrite in every app</string>
+    <string name="keyboard_label">TypePilot Keyboard</string>
+    <string name="rewrite_label">Rewrite with TypePilot</string>
+    <string name="fix_grammar_label">Fix grammar</string>
+    <string name="shortcut_write">Write with AI</string>
+    <string name="shortcut_insights">Insights</string>
+    <string name="shortcut_memory">Memory</string>
+</resources>

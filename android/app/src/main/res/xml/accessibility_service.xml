@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Only text-field and window events, coalesced by the system: the cheapest set that still sees typing. -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeViewFocused|typeViewClicked|typeViewTextChanged|typeViewTextSelectionChanged|typeWindowStateChanged|typeWindowsChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds"
+    android:canRetrieveWindowContent="true"
+    android:notificationTimeout="40"
+    android:description="@string/accessibility_description"
+    android:summary="@string/accessibility_summary"
+    android:isAccessibilityTool="false"
+    android:settingsActivity="com.typepilot.android.ui.MainActivity" />
