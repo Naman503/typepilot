@@ -1,0 +1,8 @@
+.DS_Store
+.idea/
+*.iml
+
+# Release signing: never commit these
+keystore.properties
+*.jks
+*.keystore

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="18 18 72 72" width="256" height="256">
+  <title>TypePilot</title>
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7C5CFF"/>
+      <stop offset="1" stop-color="#EC4899"/>
+    </linearGradient>
+  </defs>
+  <rect x="18" y="18" width="72" height="72" rx="18" fill="url(#g)"/>
+  <path fill="#fff" d="M40,34h12v4h-4v32h4v4h-12v-4h4v-32h-4z"/>
+  <path fill="#fff" d="M66,36l3.4,10.2L80,50l-10.6,3.8L66,64l-3.4,-10.2L52,50l10.6,-3.8z"/>
+  <path fill="#fff" fill-opacity="0.9" d="M74,62l1.6,4.4L80,68l-4.4,1.6L74,74l-1.6,-4.4L68,68l4.4,-1.6z"/>
+</svg>
