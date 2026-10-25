@@ -163,6 +163,7 @@ Measured on a vivo I2301 (Dimensity 7200, Android 15) with the dashboard open: a
 - **Never reads password fields.** It also skips fields labelled PIN, OTP, CVV, card, Aadhaar, PAN and so on, and any app you exclude (password managers are excluded by default).
 - Never learns OTPs, card numbers, keys or ID numbers.
 - Memory and stats are stored only on the phone. API keys are encrypted with an Android Keystore key.
+- **Anonymous usage reporting** (`telemetry/UsageReporter.kt`, on by default, off switch in Settings → Apps, memory & privacy): feature names, daily counts, setup steps, provider *type*, keyboard family and crashes (type and stack only) with a random install id kept outside backups. Sent to `POST /v1/app/typepilot` on the author's server, batched every 6 hours. Never text, memory, app names, model hosts or keys; turning it off deletes what was sent.
 - The app shows Google Play's required **prominent disclosure** before you enable the accessibility service.
 
 ## Setup on the phone
