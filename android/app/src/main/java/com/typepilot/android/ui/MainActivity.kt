@@ -38,6 +38,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) com.typepilot.android.TypePilotApp.instance.usage.event("app_open")
         intent?.getStringExtra(EXTRA_TAB)?.let { tabState.value = it }
         setContent {
             TypePilotTheme {

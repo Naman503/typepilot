@@ -91,6 +91,8 @@ data class AppSettings(
     val offOutsideSelected: Boolean = false,
     // Metrics
     val metricsEnabled: Boolean = true,
+    /** Anonymous usage reporting (counts and crashes, never text); see telemetry/UsageReporter. */
+    val shareUsage: Boolean = true,
     val verboseLogs: Boolean = false,
     val disclosureAccepted: Boolean = false,
 ) {
@@ -124,7 +126,7 @@ data class AppSettings(
         put("excludedPackages", JSONArray(excludedPackages.toList()))
         put("appMode", appMode.name); put("includedPackages", JSONArray(includedPackages.toList()))
         put("smartSwitch", smartSwitch); put("hiddenPackages", JSONArray(hiddenPackages.toList())); put("offOutsideSelected", offOutsideSelected)
-        put("metricsEnabled", metricsEnabled); put("verboseLogs", verboseLogs); put("disclosureAccepted", disclosureAccepted)
+        put("metricsEnabled", metricsEnabled); put("shareUsage", shareUsage); put("verboseLogs", verboseLogs); put("disclosureAccepted", disclosureAccepted)
     }
 
     companion object {
@@ -181,7 +183,8 @@ data class AppSettings(
                 // Retired: switching accessibility off in every unpicked app needed a watcher alive all day, which phones
                 // kill. Unpicked apps are now just ignored; only Hidden (payment) apps switch it off.
                 offOutsideSelected = false,
-                metricsEnabled = o.optBoolean("metricsEnabled", d.metricsEnabled), verboseLogs = o.optBoolean("verboseLogs", false),
+                metricsEnabled = o.optBoolean("metricsEnabled", d.metricsEnabled), shareUsage = o.optBoolean("shareUsage", d.shareUsage),
+                verboseLogs = o.optBoolean("verboseLogs", false),
                 disclosureAccepted = o.optBoolean("disclosureAccepted", false),
             )
         }

@@ -290,7 +290,7 @@ fun DisclosureDialog(onAccept: () -> Unit, onDecline: () -> Unit) {
                 Text("• Read the text field you're typing in (its text, cursor and label) to suggest how to continue and to rewrite it.")
                 Text("• Read visible text near that field (e.g. the message you're replying to) so suggestions fit.")
                 Text("• Insert the suggestion or rewrite into the field when you tap it.")
-                Text("It never reads password fields, and skips banking/password-manager apps you exclude. Text goes only to the AI provider you choose (or stays on the phone with an on-device model). Your memory and stats stay on this device.",
+                Text("It never reads password fields, and skips banking/password-manager apps you exclude. Text goes only to the AI provider you choose (or stays on the phone with an on-device model). Your memory and stats stay on this device. Anonymous usage counts (which features are used, crashes; never text) are shared to improve the app; turn that off in Settings → Apps, memory & privacy.",
                     fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },

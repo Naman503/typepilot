@@ -41,6 +41,7 @@ class KnowledgeBase(private val context: Context, val facts: FactStore, private 
             Log.i("knowledge", "document $id: ${found.size} facts from ${model.name}")
         }
         facts.setDocStatus(id, if (model == null) "done (no AI: basic facts only)" else "done")
+        com.typepilot.android.TypePilotApp.instance.usage.event("document_added")
         setProgress(id, null)
     }
 

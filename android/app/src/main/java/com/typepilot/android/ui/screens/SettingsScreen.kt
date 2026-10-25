@@ -325,6 +325,11 @@ private fun PrivacySection(s: AppSettings, set: ((AppSettings) -> AppSettings) -
         MemorySettingsCard()
         Gap(4)
         Toggle("Use memory in AI prompts", "Lets the model use facts you've typed before", s.memoryInPrompts) { v -> set { it.copy(memoryInPrompts = v) } }
+        Toggle(
+            "Share anonymous usage",
+            "Which features get used, daily counts and crashes, with a random id. Never what you type, your memory, app names or keys. Turning it off deletes what was sent.",
+            s.shareUsage,
+        ) { v -> set { it.copy(shareUsage = v) } }
         Gap(8)
         var confirm by remember { mutableStateOf(false) }
         OutlinedButton(onClick = { if (confirm) { app.memory.clear(); confirm = false } else confirm = true }) {

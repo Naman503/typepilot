@@ -681,6 +681,7 @@ class TypePilotAccessibilityService : AccessibilityService(), OverlayController.
         if (!s.hiddenIn(pkg) || !A11ySwitch.ready(this)) return false
         leaveField("switched off for $pkg")
         Log.i("switch", "off while $pkg is open")
+        app.usage.count("hidden_app_switch")
         AppWatcherService.start(this, appName(pkg))
         SwitchRecovery.scheduleBackup(this)
         A11ySwitch.turnOff(this)

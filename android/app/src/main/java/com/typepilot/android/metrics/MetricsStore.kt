@@ -66,7 +66,13 @@ class MetricsStore(context: Context) : SQLiteOpenHelper(context, "metrics.db", n
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
 
-    fun record(e: MetricEvent) { if (enabled) queue.add(e) }
+    /** Sees every event, even with local stats off (usage reporting keeps its own counts). */
+    @Volatile var observer: ((MetricEvent) -> Unit)? = null
+
+    fun record(e: MetricEvent) {
+        observer?.invoke(e)
+        if (enabled) queue.add(e)
+    }
     fun recordPerf(p: PerfRow) { if (enabled) perfQueue.add(p) }
 
     fun flush() {

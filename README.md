@@ -132,7 +132,8 @@ If the phone kills the watcher while accessibility is off, the next app update, 
 
 - **Never reads password fields**, or fields labelled PIN, OTP, CVV, card, Aadhaar, PAN and similar. Password managers are excluded by default.
 - **Never learns** OTPs, card numbers, keys or ID numbers.
-- **Your memory and stats stay on the phone.** Nothing is uploaded anywhere except the text a cloud model needs, and only when you choose a cloud model.
+- **Your memory and stats stay on the phone.** The only text that leaves it is what a cloud model needs, and only when you choose a cloud model.
+- **Anonymous usage, with an off switch.** TypePilot shares which features are used, daily counts (suggestions shown and accepted), setup steps, the AI provider *type* and crashes (exception type and stack, never the message), tied to a random id made on first run. Never what you type, your memory, app names, model hosts or keys. Turn it off in **Settings → Apps, memory & privacy → Share anonymous usage**; that also deletes what was sent.
 - **Redacted first:** card numbers, keys, IBAN, Aadhaar, PAN and SSN are removed before text goes to a cloud model.
 - **API keys** are encrypted with an Android Keystore key and never leave the phone, not even in backups.
 - The app shows Google Play's **prominent disclosure** before you turn on the accessibility service.
