@@ -32,6 +32,7 @@ import com.typepilot.android.metrics.LiveMetrics
 import com.typepilot.android.metrics.MetricEvent
 import com.typepilot.android.metrics.Stage
 import com.typepilot.android.text.SensitiveFilter
+import com.typepilot.android.telemetry.Usage
 import com.typepilot.android.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -72,6 +73,11 @@ class TypePilotIme : InputMethodService(), KeyboardView.Listener {
     private var noLearning = false
     private var secureField = false
     private var lastSpaceAt = 0L
+    /** Typing-session start, and the tab ("rewrite"/"write") of an AI result on screen that isn't applied yet. */
+    private var sessionSince = 0L
+    private var sessionPkg = ""
+    private var sessionTyped = false
+    private var resultTab: String? = null
 
     private val density get() = resources.displayMetrics.density
     private fun dp(v: Float) = (v * density).toInt()
@@ -150,12 +156,17 @@ class TypePilotIme : InputMethodService(), KeyboardView.Listener {
         }
         typedInField = false
         closeResult()
+        endSession()
+        sessionSince = SystemClock.elapsedRealtime(); sessionPkg = info.packageName.orEmpty(); sessionTyped = false
         updateAutoCaps()
         if (!secureField && app.settings.value.isActive) requestSuggestion(SuggestTrigger.FOCUS, 0) else showTools()
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
+        if (typedInField) sessionTyped = true
         learnField()
+        resultDone("discarded")
+        endSession()
         isActiveInput = false
         LiveMetrics.updateStatus { it.copy(keyboardActive = false) }
         suggestJob?.cancel()
@@ -221,7 +232,8 @@ class TypePilotIme : InputMethodService(), KeyboardView.Listener {
         if (text == " " && now - lastSpaceAt < 350) {
             val before = ic.getTextBeforeCursor(2, 0)?.toString().orEmpty()
             if (before.length == 2 && before[1] == ' ' && before[0].isLetterOrDigit()) {
-                ic.deleteSurroundingText(1, 0); ic.commitText(". ", 1); lastSpaceAt = 0; afterEdit(2); return
+                ic.deleteSurroundingText(1, 0); ic.commitText(". ", 1); lastSpaceAt = 0; afterEdit(2)
+                Usage.count("keyboard_shortcut", mapOf("kind" to "double_space_period")); return
             }
         }
         if (text == " ") lastSpaceAt = now
@@ -280,11 +292,13 @@ class TypePilotIme : InputMethodService(), KeyboardView.Listener {
     }
 
     override fun onSwitchKeyboard() {
+        tool("switch_keyboard")
         getSystemService(InputMethodManager::class.java)?.showInputMethodPicker()
     }
 
     private fun afterEdit(typedChars: Int) {
         typedInField = true
+        sessionTyped = true
         if (typedChars > 0) LiveMetrics.typed(typedChars, SystemClock.uptimeMillis())
         suggestion?.let { recordSuggestion(EventType.IGNORED, it, "") }
         suggestion = null
@@ -367,12 +381,12 @@ class TypePilotIme : InputMethodService(), KeyboardView.Listener {
     private fun showTools() {
         stripMode = StripMode.TOOLS
         strip.removeAllViews()
-        strip.addView(chip("✦ Rewrite", primary = true, bold = true) { showModes() }, lp())
-        strip.addView(chip("✎ Write") { startAsk() }, lp())
-        strip.addView(chip("Fix") { runRewrite(RewriteMode.GRAMMAR) }, lp())
+        strip.addView(chip("✦ Rewrite", primary = true, bold = true) { tool("rewrite_menu"); showModes() }, lp())
+        strip.addView(chip("✎ Write") { tool("write"); startAsk() }, lp())
+        strip.addView(chip("Fix") { tool("fix"); runRewrite(RewriteMode.GRAMMAR) }, lp())
         strip.addView(View(this), lp(1f))
-        strip.addView(chip("🧠") { open(MainActivity.TAB_MEMORY) }, lp())
-        strip.addView(chip("📊") { open(MainActivity.TAB_INSIGHTS) }, lp())
+        strip.addView(chip("🧠") { tool("memory"); open(MainActivity.TAB_MEMORY) }, lp())
+        strip.addView(chip("📊") { tool("insights"); open(MainActivity.TAB_INSIGHTS) }, lp())
     }
 
     private fun renderSuggestion() {
@@ -424,7 +438,7 @@ class TypePilotIme : InputMethodService(), KeyboardView.Listener {
         stripMode = StripMode.BUSY
         strip.removeAllViews()
         strip.addView(TextView(this).apply { text = "✦  $label"; setTextColor(accent); setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f); typeface = Typeface.DEFAULT_BOLD }, lp(1f))
-        strip.addView(chip("Stop") { aiJob?.cancel(); closeResult(); showTools() }, lp())
+        strip.addView(chip("Stop") { tool("stop"); aiJob?.cancel(); closeResult(); showTools() }, lp())
     }
 
     // ------------------------------------------------------------ AI rewrite & write
@@ -437,6 +451,7 @@ class TypePilotIme : InputMethodService(), KeyboardView.Listener {
     }
 
     private fun closeResult() {
+        resultDone("discarded")
         if (!::result.isInitialized) return
         result.visibility = View.GONE
         keyboard.visibility = View.VISIBLE
@@ -456,6 +471,7 @@ class TypePilotIme : InputMethodService(), KeyboardView.Listener {
         if (source.isBlank()) { showTools(); return }
         app.engine.writingConfigError()?.let { showResult("⚠︎ $it"); resultButtons("Keyboard" to { closeResult(); showTools() }); return }
         val c = ctx()
+        resultTab = null // a retry replaces the old result: not a discard
         busy("${mode.title}…")
         showResult("…")
         resultButtons("Cancel" to { aiJob?.cancel(); closeResult(); showTools() })
@@ -466,12 +482,14 @@ class TypePilotIme : InputMethodService(), KeyboardView.Listener {
             app.engine.rewrite(source, mode, c).catch { e -> failed = e.message }.collect { out = it; resultText.text = it }
             if (failed != null || out.isBlank()) {
                 resultText.text = "⚠︎ ${failed ?: "The model returned nothing."}"
-                resultButtons("Keyboard" to { closeResult(); showTools() }, "Retry" to { runRewrite(mode) })
+                resultButtons("Keyboard" to { closeResult(); showTools() }, "Retry" to { tool("retry"); runRewrite(mode) })
             } else {
+                resultTab = "rewrite"
                 resultButtons(
                     "Keyboard" to { closeResult(); showTools() },
-                    "Retry" to { runRewrite(mode) },
+                    "Retry" to { tool("retry"); runRewrite(mode) },
                     (if (selected.isNotBlank()) "Replace selection" else "Replace all") to {
+                        resultDone("applied")
                         replaceText(out, selectionOnly = selected.isNotBlank())
                         app.metrics.record(MetricEvent(EventType.REWRITE_APPLIED, "ai", c.packageName, mode = mode.name, chars = out.length))
                         closeResult(); showTools()
@@ -489,6 +507,7 @@ class TypePilotIme : InputMethodService(), KeyboardView.Listener {
         if (request.isEmpty()) return
         app.engine.writingConfigError()?.let { showResult("⚠︎ $it"); resultButtons("Keyboard" to { closeResult(); showTools() }); return }
         val c = ctx()
+        resultTab = null
         busy("Writing…")
         showResult("…")
         resultButtons("Cancel" to { aiJob?.cancel(); closeResult(); showTools() })
@@ -501,10 +520,12 @@ class TypePilotIme : InputMethodService(), KeyboardView.Listener {
                 resultText.text = "⚠︎ ${failed ?: "The model returned nothing."}"
                 resultButtons("Keyboard" to { closeResult(); showTools() })
             } else {
+                resultTab = "write"
                 resultButtons(
                     "Keyboard" to { closeResult(); showTools() },
-                    "Shorter" to { askBuffer = StringBuilder("$request. Keep it short."); runWrite() },
+                    "Shorter" to { tool("shorter"); askBuffer = StringBuilder("$request. Keep it short."); runWrite() },
                     "Insert" to {
+                        resultDone("applied")
                         currentInputConnection?.commitText(out, 1)
                         app.metrics.record(MetricEvent(EventType.WRITE_APPLIED, "ai", c.packageName, chars = out.length))
                         closeResult(); showTools()
@@ -526,6 +547,21 @@ class TypePilotIme : InputMethodService(), KeyboardView.Listener {
         ic.commitText(text, 1)
         ic.endBatchEdit()
         typedInField = true
+    }
+
+    private fun tool(name: String) = Usage.count("keyboard_tool", mapOf("tool" to name))
+
+    /** The AI result on screen was used or thrown away (closed, keyboard hidden, field left). */
+    private fun resultDone(outcome: String) {
+        val tab = resultTab ?: return
+        resultTab = null
+        Usage.event("ai_result_closed", mapOf("surface" to "keyboard", "tab" to tab, "outcome" to outcome))
+    }
+
+    private fun endSession() {
+        if (sessionSince == 0L) return
+        Usage.typingSession("keyboard", sessionPkg, sessionSince, sessionTyped)
+        sessionSince = 0L
     }
 
     private fun open(tab: String) {

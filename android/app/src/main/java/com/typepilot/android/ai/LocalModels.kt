@@ -233,8 +233,16 @@ class ModelDownloader(private val manager: LocalModelManager, private val token:
         _progress.value = _progress.value.toMutableMap().apply { if (p == null) remove(id) else put(id, p) }
     }
 
+    /** Usage reporting: the download's size bucket and whether it's from the built-in catalog (never the model's name). */
+    private fun report(info: LocalModelInfo, action: String, extra: Map<String, String> = emptyMap()) =
+        com.typepilot.android.telemetry.Usage.event("local_model", mapOf("action" to action,
+            "catalog" to (LocalCatalog.byId(info.id) != null).toString(),
+            "size" to com.typepilot.android.telemetry.UsageMapping.sizeMb(info.sizeMb.toLong())) + extra)
+
     fun start(info: LocalModelInfo) {
         if (jobs[info.id]?.isActive == true) return
+        val t0 = SystemClock.elapsedRealtime()
+        report(info, "download_start")
         jobs[info.id] = scope.launch {
             val target = File(manager.modelsDir, info.fileName)
             val part = File(manager.modelsDir, info.fileName + ".part")
@@ -272,9 +280,16 @@ class ModelDownloader(private val manager: LocalModelManager, private val token:
                 part.renameTo(target)
                 set(info.id, Progress(target.length(), target.length(), done = true))
                 Log.i("local", "downloaded ${info.id} (${target.length() / 1_000_000} MB)")
+                report(info, "download_done", mapOf("time" to com.typepilot.android.telemetry.UsageMapping.duration(SystemClock.elapsedRealtime() - t0)))
             } catch (e: kotlinx.coroutines.CancellationException) {
                 set(info.id, null)
+                report(info, "download_paused")
             } catch (e: Exception) {
+                report(info, "download_failed", mapOf("reason" to when {
+                    e is ModelException -> if (e.message?.startsWith("Not enough storage") == true) "storage" else com.typepilot.android.telemetry.UsageMapping.errorCategory(e.kind.name)
+                    e is java.io.IOException -> "network"
+                    else -> "other"
+                }))
                 set(info.id, Progress(part.length(), info.sizeMb * 1_000_000L, error = e.message))
                 Log.w("local", "download ${info.id} failed: ${e.message}")
             }

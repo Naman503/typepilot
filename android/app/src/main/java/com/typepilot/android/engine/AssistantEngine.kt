@@ -26,6 +26,8 @@ import com.typepilot.android.metrics.Stage
 import com.typepilot.android.text.ContinuationCleaner
 import com.typepilot.android.text.DraftCleaner
 import com.typepilot.android.text.SensitiveFilter
+import com.typepilot.android.telemetry.Usage
+import com.typepilot.android.telemetry.UsageMapping
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -182,9 +184,11 @@ class AssistantEngine(
             stop = listOf("\n\n"),
         )
         LiveMetrics.modelCalls.incrementAndGet()
+        val op = if (aiOnly) "answer" else "complete"
+        val family = UsageMapping.provider(s, s.completionProvider)
+        val m0 = SystemClock.elapsedRealtime()
+        var ttft = 0L
         try {
-            val m0 = SystemClock.elapsedRealtime()
-            var ttft = 0L
             var raw = ""
             var lastPartial = ""
             model.stream(req).collect { text ->
@@ -202,19 +206,25 @@ class AssistantEngine(
             LiveMetrics.record(Stage.MODEL_TOTAL, SystemClock.elapsedRealtime() - m0)
             val text = ContinuationCleaner.clean(raw, ctx.textBefore, words, ctx.isMultiline) ?: run {
                 Log.d("engine", "nothing usable from model: ${raw.take(60)}")
+                Usage.aiRequest(op, "empty", family, SystemClock.elapsedRealtime() - m0)
                 return@withContext null
             }
+            Usage.aiRequest(op, "ok", family, SystemClock.elapsedRealtime() - m0, ttft)
             synchronized(cache) { cache[key] = text }
             Suggestion(text, "ai", provider = model.name, engineMs = SystemClock.elapsedRealtime() - t0, ttftMs = ttft)
         } catch (e: CancellationException) {
             LiveMetrics.cancelled.incrementAndGet()
+            Usage.aiRequest(op, "cancelled", family, SystemClock.elapsedRealtime() - m0)
             throw e
         } catch (e: ModelException) {
             metrics.record(MetricEvent(EventType.ERROR, app = ctx.packageName, provider = model.name, mode = e.kind.name))
+            Usage.aiRequest(op, "error", family, SystemClock.elapsedRealtime() - m0, error = UsageMapping.errorCategory(e.kind.name))
             Log.w("engine", "completion failed: ${e.message}")
             null
         } catch (e: Exception) {
             metrics.record(MetricEvent(EventType.ERROR, app = ctx.packageName, provider = model.name, mode = "OTHER"))
+            Usage.aiRequest(op, "error", family, SystemClock.elapsedRealtime() - m0, error = "other")
+            Usage.nonFatal(e, "engine")
             Log.w("engine", "completion failed: ${e.message}")
             null
         }
@@ -226,6 +236,8 @@ class AssistantEngine(
         val t0 = SystemClock.elapsedRealtime()
         var ttft = -1L
         var last = ""
+        val op = if (type == EventType.WRITE) "write" else "rewrite"
+        val family = UsageMapping.provider(settings.value, writingKind())
         try {
             flow.collect {
                 if (ttft < 0 && it.isNotEmpty()) { ttft = SystemClock.elapsedRealtime() - t0; LiveMetrics.record(Stage.REWRITE_TTFT, ttft) }
@@ -236,17 +248,28 @@ class AssistantEngine(
             LiveMetrics.record(Stage.REWRITE_TOTAL, total)
             metrics.record(MetricEvent(type, source = "ai", app = ctx.packageName, provider = model.name, mode = mode,
                 latencyMs = total, ttftMs = maxOf(ttft, 0), chars = last.length, words = inputChars))
+            Usage.aiRequest(op, if (last.isBlank()) "empty" else "ok", family, total, maxOf(ttft, 0))
+        } catch (e: CancellationException) {
+            Usage.aiRequest(op, "cancelled", family, SystemClock.elapsedRealtime() - t0)
+            throw e
         } catch (e: ModelException) {
             metrics.record(MetricEvent(EventType.ERROR, app = ctx.packageName, provider = model.name, mode = e.kind.name))
+            Usage.aiRequest(op, "error", family, SystemClock.elapsedRealtime() - t0, error = UsageMapping.errorCategory(e.kind.name))
+            throw e
+        } catch (e: Exception) {
+            Usage.aiRequest(op, "error", family, SystemClock.elapsedRealtime() - t0, error = "other")
+            Usage.nonFatal(e, "engine")
             throw e
         }
     }
 
+    /** "Memory only" can't write: fall back to the completion provider, then Gemini. */
+    private fun writingKind(s: AppSettings = settings.value): ProviderKind =
+        listOf(s.writingProvider, s.completionProvider, ProviderKind.GEMINI).first { it != ProviderKind.OFF }
+
     private fun writingModel(): TextModel {
         val s = settings.value
-        // "Memory only" can't write: fall back to the completion provider, then Gemini.
-        val kind = listOf(s.writingProvider, s.completionProvider, ProviderKind.GEMINI).first { it != ProviderKind.OFF }
-        return modelFor(kind, s, writing = true)!!
+        return modelFor(writingKind(s), s, writing = true)!!
     }
 
     fun writingModelName(): String = writingModel().name
@@ -278,15 +301,22 @@ class AssistantEngine(
 
     /** Test a provider from Settings: returns (ok, message with latency). */
     suspend fun test(kind: ProviderKind): Pair<Boolean, String> {
+        val family = UsageMapping.provider(settings.value, kind)
         val model = modelFor(kind) ?: return true to "Memory only: no model needed."
-        model.configError()?.let { return false to it }
+        model.configError()?.let { Usage.aiRequest("test", "error", family, 0, error = "not_configured"); return false to it }
+        val t0 = SystemClock.elapsedRealtime()
         return try {
-            val t0 = SystemClock.elapsedRealtime()
             var ttft = 0L
             val out = model.generate(GenerationRequest("Reply with exactly: OK", "Say OK.", 8, 0.0)) { ttft = it.ttftMs }
+            Usage.aiRequest("test", "ok", family, SystemClock.elapsedRealtime() - t0, ttft)
             (true to "Works · first token ${ttft} ms · total ${SystemClock.elapsedRealtime() - t0} ms · \"${out.trim().take(20)}\"")
                 .also { Log.i("test", "${model.name}: ${it.second}") }
-        } catch (e: Exception) { (false to (e.message ?: "Failed")).also { Log.w("test", "${model.name}: ${it.second}") } }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Usage.aiRequest("test", "error", family, SystemClock.elapsedRealtime() - t0, error = UsageMapping.errorCategory((e as? ModelException)?.kind?.name))
+            (false to (e.message ?: "Failed")).also { Log.w("test", "${model.name}: ${it.second}") }
+        }
     }
 
     /** Open the cloud connection, or (when [inField]) load the on-device model so the first suggestion is fast. */
@@ -301,7 +331,10 @@ class AssistantEngine(
         val s = settings.value
         if (!s.memoryEnabled || (!s.learnFromTyping && kind == MemoryEntry.Kind.TYPED)) return
         if (SensitiveFilter.isSensitiveLabel(ctx.fieldLabel)) return
-        if (memory.record(text, ctx.appName, ctx.fieldLabel, kind)) Log.d("memory", "remembered ${text.length} chars from ${ctx.appName}")
+        if (memory.record(text, ctx.appName, ctx.fieldLabel, kind)) {
+            Usage.count("memory_learned", mapOf("kind" to "phrase", "via" to kind.name.lowercase()))
+            Log.d("memory", "remembered ${text.length} chars from ${ctx.appName}")
+        }
     }
 
     companion object {

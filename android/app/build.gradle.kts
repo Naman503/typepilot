@@ -43,8 +43,8 @@ android {
         targetSdk = 36
         // Phones (and Apple-silicon emulators) are arm64: shipping only that keeps the native AI runtime to one copy.
         ndk { abiFilters += listOf("arm64-v8a") }
-        versionCode = 3
-        versionName = "1.1.0"
+        versionCode = 4
+        versionName = "1.2.0"
     }
 
     signingConfigs {

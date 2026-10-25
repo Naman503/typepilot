@@ -149,26 +149,29 @@ fun HomeScreen(onOpen: (String) -> Unit) {
         if (!done.all { it }) {
             SectionCard("Setup", subtitle = "${done.count { it }} of 3 done") {
                 SetupRow("Turn on TypePilot in Accessibility", "Suggestions & the ✦ button on top of every app, with your current keyboard (Gboard etc.).", accessibility) {
+                    com.typepilot.android.telemetry.Usage.count("setup_step_opened", mapOf("step" to "accessibility"))
                     if (settings.disclosureAccepted) Setup.openAccessibility(context) else showDisclosure = true
                 }
                 if (!accessibility) {
                     Text("Greyed out? Android blocks this for apps installed outside Play: App info → ⋮ → Allow restricted settings, then try again.",
                         fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 34.dp, bottom = 6.dp))
-                    TextButton(onClick = { Setup.openAppDetails(context) }, modifier = Modifier.padding(start = 26.dp)) { Text("Open App info") }
+                    TextButton(onClick = { com.typepilot.android.telemetry.Usage.count("setup_step_opened", mapOf("step" to "restricted_settings")); Setup.openAppDetails(context) }, modifier = Modifier.padding(start = 26.dp)) { Text("Open App info") }
                 }
                 SetupRow("Or use the TypePilot keyboard", "Optional: a keyboard with AI in its toolbar. Works where accessibility is blocked.", keyboardEnabled) {
+                    com.typepilot.android.telemetry.Usage.count("setup_step_opened", mapOf("step" to "keyboard"))
                     Setup.openKeyboardSettings(context)
                 }
                 SetupRow("Keep it running all day", if (Setup.aggressiveOem) "Unrestricted battery, plus on ${android.os.Build.MANUFACTURER}: ${Setup.oemSteps()}" else "Allow unrestricted battery so Android doesn't stop it.", battery) {
+                    com.typepilot.android.telemetry.Usage.count("setup_step_opened", mapOf("step" to "battery"))
                     if (!battery) Setup.requestBattery(context) else Setup.openAppDetails(context)
                 }
-                SetupRow("Connect an AI model", providerError ?: "Ready", providerError == null) { onOpen(MainActivity.TAB_SETTINGS) }
+                SetupRow("Connect an AI model", providerError ?: "Ready", providerError == null) { com.typepilot.android.telemetry.Usage.count("setup_step_opened", mapOf("step" to "model")); onOpen(MainActivity.TAB_SETTINGS) }
             }
             Gap(16)
         } else if (Setup.aggressiveOem) {
             SectionCard("Stay alive on ${android.os.Build.MANUFACTURER}", subtitle = "Phone makers stop background apps; one more switch helps") {
                 Text(Setup.oemSteps(), fontSize = 13.sp)
-                TextButton(onClick = { Setup.openAppDetails(context) }) { Text("Open App info") }
+                TextButton(onClick = { com.typepilot.android.telemetry.Usage.count("setup_step_opened", mapOf("step" to "oem_battery")); Setup.openAppDetails(context) }) { Text("Open App info") }
             }
             Gap(16)
         }
@@ -194,19 +197,22 @@ fun HomeScreen(onOpen: (String) -> Unit) {
         SectionCard("Quick actions") {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 QuickAction("Rewrite clipboard", Icons.Default.ContentPaste, Modifier.weight(1f)) {
+                    com.typepilot.android.telemetry.Usage.count("home_action", mapOf("action" to "rewrite_clipboard"))
                     val clip = context.getSystemService(ClipboardManager::class.java)?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
                     RewriteBridge.open(context, RewriteBridge.Request(clip, FieldContext(), actionLabel = "Copy",
                         deliver = { com.typepilot.android.service.TextApplier.copy(context, it) }))
                 }
                 QuickAction("Write with AI", Icons.Default.AutoAwesome, Modifier.weight(1f)) {
+                    com.typepilot.android.telemetry.Usage.count("home_action", mapOf("action" to "write"))
                     RewriteBridge.open(context, RewriteBridge.Request("", FieldContext(), tab = RewriteBridge.Tab.WRITE, actionLabel = "Copy",
                         deliver = { com.typepilot.android.service.TextApplier.copy(context, it) }))
                 }
             }
             Gap(10)
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                QuickAction("Switch keyboard", Icons.Default.Keyboard, Modifier.weight(1f)) { Setup.pickKeyboard(context) }
+                QuickAction("Switch keyboard", Icons.Default.Keyboard, Modifier.weight(1f)) { com.typepilot.android.telemetry.Usage.count("home_action", mapOf("action" to "switch_keyboard")); Setup.pickKeyboard(context) }
                 QuickAction(if (settings.isPaused) "Resume" else "Pause 1 hour", Icons.Default.PauseCircle, Modifier.weight(1f)) {
+                    com.typepilot.android.telemetry.Usage.count("home_action", mapOf("action" to if (settings.isPaused) "resume" else "pause"))
                     app.settings.update { it.copy(pausedUntil = if (it.isPaused) 0 else System.currentTimeMillis() + 3_600_000) }
                 }
             }
@@ -245,8 +251,8 @@ fun HomeScreen(onOpen: (String) -> Unit) {
     }
 
     if (showDisclosure) DisclosureDialog(
-        onAccept = { app.settings.update { it.copy(disclosureAccepted = true) }; showDisclosure = false; Setup.openAccessibility(context) },
-        onDecline = { showDisclosure = false },
+        onAccept = { com.typepilot.android.telemetry.Usage.event("disclosure", mapOf("choice" to "accept")); app.settings.update { it.copy(disclosureAccepted = true) }; showDisclosure = false; Setup.openAccessibility(context) },
+        onDecline = { com.typepilot.android.telemetry.Usage.event("disclosure", mapOf("choice" to "decline")); showDisclosure = false },
     )
 }
 
@@ -290,7 +296,7 @@ fun DisclosureDialog(onAccept: () -> Unit, onDecline: () -> Unit) {
                 Text("• Read the text field you're typing in (its text, cursor and label) to suggest how to continue and to rewrite it.")
                 Text("• Read visible text near that field (e.g. the message you're replying to) so suggestions fit.")
                 Text("• Insert the suggestion or rewrite into the field when you tap it.")
-                Text("It never reads password fields, and skips banking/password-manager apps you exclude. Text goes only to the AI provider you choose (or stays on the phone with an on-device model). Your memory and stats stay on this device. Anonymous usage counts (which features are used, crashes; never text) are shared to improve the app; turn that off in Settings → Apps, memory & privacy.",
+                Text("It never reads password fields, and skips banking/password-manager apps you exclude. Text goes only to the AI provider you choose (or stays on the phone with an on-device model). Your memory and stats stay on this device. Anonymous usage counts (which features and settings are used, how AI requests go, crashes; never text, app names or memory) are shared to improve the app; turn that off in Settings → Apps, memory & privacy.",
                     fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },

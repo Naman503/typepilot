@@ -149,6 +149,13 @@ fun SettingsScreen() {
     }
 }
 
+/** A button in Settings was used: a fixed action name, and for actions that can fail, whether it worked. */
+private fun settingsAction(action: String, ok: Boolean? = null, okWord: String = "ok", failWord: String = "failed") =
+    com.typepilot.android.telemetry.Usage.count("settings_action", buildMap {
+        put("action", action)
+        if (ok != null) put("outcome", if (ok) okWord else failWord)
+    })
+
 @Composable
 private fun AiSection(s: AppSettings, set: ((AppSettings) -> AppSettings) -> Unit) {
     val app = TypePilotApp.instance
@@ -179,7 +186,8 @@ private fun AiSection(s: AppSettings, set: ((AppSettings) -> AppSettings) -> Uni
         TextButton(onClick = {
             val key = app.secrets.get(Secrets.GEMINI)
             if (key.isNullOrBlank()) geminiErr = "Add your API key first." else scope.launch {
-                runCatching { GeminiModel.listModels(key) }.onSuccess { geminiModels = it; geminiErr = null }.onFailure { geminiErr = it.message }
+                runCatching { GeminiModel.listModels(key) }.onSuccess { geminiModels = it; geminiErr = null; settingsAction("load_gemini_models", true) }
+                    .onFailure { geminiErr = it.message; settingsAction("load_gemini_models", false) }
             }
         }) { Text("Load the models my key can use") }
         geminiErr?.let { Text(it, color = Brand.Red, fontSize = 12.sp) }
@@ -200,7 +208,10 @@ private fun AiSection(s: AppSettings, set: ((AppSettings) -> AppSettings) -> Uni
             }, label = { Text(p.title) })
             FilterChip(base.contains(":11434"), {
                 scanning = true; found = null
-                scope.launch { found = com.typepilot.android.ai.OllamaDiscovery.scan(context); scanning = false }
+                scope.launch {
+                    found = com.typepilot.android.ai.OllamaDiscovery.scan(context); scanning = false
+                    settingsAction("ollama_scan", found?.isNotEmpty() == true, okWord = "found", failWord = "none")
+                }
             }, label = { Text(if (scanning) "Searching Wi-Fi…" else "Find Ollama on Wi-Fi") })
         }
         found?.let { servers ->
@@ -229,8 +240,9 @@ private fun AiSection(s: AppSettings, set: ((AppSettings) -> AppSettings) -> Uni
         TextButton(onClick = {
             scope.launch {
                 runCatching { OpenAICompatibleModel.listModels(base, app.secrets.get(Secrets.OPENAI)) }
-                    .onSuccess { serverModels = it; listErr = if (it.isEmpty()) "The server has no models." else null }
-                    .onFailure { listErr = (it as? java.io.IOException)?.let { e -> com.typepilot.android.ai.Http.connectionHelp(OpenAICompatibleModel.hostLabel(base), runCatching { java.net.URI(base).host }.getOrDefault(base), e) } ?: it.message }
+                    .onSuccess { serverModels = it; listErr = if (it.isEmpty()) "The server has no models." else null; settingsAction("load_server_models", it.isNotEmpty()) }
+                    .onFailure {
+                        settingsAction("load_server_models", false); listErr = (it as? java.io.IOException)?.let { e -> com.typepilot.android.ai.Http.connectionHelp(OpenAICompatibleModel.hostLabel(base), runCatching { java.net.URI(base).host }.getOrDefault(base), e) } ?: it.message }
             }
         }) { Text("Load models from this server") }
         listErr?.let { Text(it, color = Brand.Red, fontSize = 12.sp) }
@@ -244,11 +256,11 @@ private fun AiSection(s: AppSettings, set: ((AppSettings) -> AppSettings) -> Uni
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = {
                 testing = true
-                scope.launch { testResult = app.engine.test(s.completionProvider); testing = false }
+                scope.launch { testResult = app.engine.test(s.completionProvider); testing = false; settingsAction("test_suggestions_model", testResult?.first == true) }
             }, enabled = !testing) { Text(if (testing) "Testing…" else "Test suggestions model") }
             OutlinedButton(onClick = {
                 testing = true
-                scope.launch { testResult = app.engine.test(s.writingProvider); testing = false }
+                scope.launch { testResult = app.engine.test(s.writingProvider); testing = false; settingsAction("test_writing_model", testResult?.first == true) }
             }, enabled = !testing) { Text("Test writing") }
         }
         testResult?.let { (ok, msg) -> Text((if (ok) "✓ " else "✕ ") + msg, color = if (ok) Brand.Green else Brand.Red, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp)) }
@@ -276,7 +288,10 @@ private fun ProviderPicker(selected: ProviderKind, allowOff: Boolean = true, onP
 private fun SecretField(label: String, name: String) {
     val app = TypePilotApp.instance
     var value by remember { mutableStateOf(app.secrets.get(name).orEmpty()) }
-    OutlinedTextField(value, { value = it; app.secrets.set(name, it) }, Modifier.fillMaxWidth(), singleLine = true, label = { Text(label) },
+    OutlinedTextField(value, { v ->
+            if (value.isBlank() != v.isBlank()) com.typepilot.android.telemetry.Usage.count("setting_changed", mapOf("key" to "${name}_key", "value" to if (v.isBlank()) "removed" else "set"))
+            value = v; app.secrets.set(name, v)
+        }, Modifier.fillMaxWidth(), singleLine = true, label = { Text(label) },
         visualTransformation = PasswordVisualTransformation(), shape = RoundedCornerShape(14.dp),
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
         trailingIcon = { if (value.isNotBlank()) Pill("saved", Brand.Green, Modifier.padding(end = 8.dp)) })
@@ -300,7 +315,7 @@ private fun LocalModelsSection(s: AppSettings, set: ((AppSettings) -> AppSetting
                 fontSize = 12.sp, color = Brand.Green)
         rec?.let { Text("Recommended for this phone: ${it.name}", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary) }
         Gap(8)
-        Button(onClick = { open = true }) { Text("Browse models · speed, accuracy & requirements") }
+        Button(onClick = { settingsAction("open_model_library"); open = true }) { Text("Browse models · speed, accuracy & requirements") }
     }
     if (open) ModelLibraryDialog { open = false }
 }
@@ -310,7 +325,7 @@ private fun PrivacySection(s: AppSettings, set: ((AppSettings) -> AppSettings) -
     val app = TypePilotApp.instance
     var pickApps by remember { mutableStateOf(false) }
     SectionCard("Apps, memory & privacy") {
-        Surface(onClick = { pickApps = true }, shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+        Surface(onClick = { settingsAction("open_app_picker"); pickApps = true }, shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
             Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Where TypePilot works", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
@@ -327,12 +342,12 @@ private fun PrivacySection(s: AppSettings, set: ((AppSettings) -> AppSettings) -
         Toggle("Use memory in AI prompts", "Lets the model use facts you've typed before", s.memoryInPrompts) { v -> set { it.copy(memoryInPrompts = v) } }
         Toggle(
             "Share anonymous usage",
-            "Which features get used, daily counts and crashes, with a random id. Never what you type, your memory, app names or keys. Turning it off deletes what was sent.",
+            "Which features, screens and settings get used, daily counts, how AI requests go (errors, speed), setup steps and crashes, with a random id. Only fixed values and buckets: never what you type, your memory, app names or keys. Turning it off deletes what was sent.",
             s.shareUsage,
         ) { v -> set { it.copy(shareUsage = v) } }
         Gap(8)
         var confirm by remember { mutableStateOf(false) }
-        OutlinedButton(onClick = { if (confirm) { app.memory.clear(); confirm = false } else confirm = true }) {
+        OutlinedButton(onClick = { if (confirm) { settingsAction("clear_memory"); app.memory.clear(); confirm = false } else confirm = true }) {
             Text(if (confirm) "Tap again to erase all memory" else "Clear memory", color = Brand.Red)
         }
         Gap(8)
@@ -353,6 +368,7 @@ private fun BackupRow() {
         scope.launch {
             status = withContext(Dispatchers.IO) {
                 runCatching { com.typepilot.android.core.Backup.export(context, uri) }
+                    .also { settingsAction("backup", it.isSuccess); it.exceptionOrNull()?.let { e -> com.typepilot.android.telemetry.Usage.nonFatal(e, "backup") } }
                     .fold({ "Saved. Keep this file private: it holds your memory (API keys aren't included)." }, { "Backup failed: ${it.message}" })
             }
         }
@@ -376,6 +392,7 @@ private fun BackupRow() {
                     pending = null
                     scope.launch {
                         val error = withContext(Dispatchers.IO) { runCatching { com.typepilot.android.core.Backup.stage(context, uri) }.exceptionOrNull() }
+                        settingsAction("restore", error == null)
                         if (error == null) com.typepilot.android.core.Backup.restart(context) else status = error.message
                     }
                 }) { Text("Restore") }
@@ -397,6 +414,7 @@ private fun MetricsSection(s: AppSettings, set: ((AppSettings) -> AppSettings) -
         Toggle("Detailed logs", "For troubleshooting", s.verboseLogs) { v -> set { it.copy(verboseLogs = v) } }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = {
+                settingsAction("export_csv")
                 scope.launch {
                     val file = withContext(Dispatchers.IO) { File(context.cacheDir, "typepilot-stats.csv").apply { writeText(app.metrics.exportCsv()) } }
                     val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
@@ -405,11 +423,11 @@ private fun MetricsSection(s: AppSettings, set: ((AppSettings) -> AppSettings) -
                 }
             }) { Text("Export CSV") }
             var confirm by remember { mutableStateOf(false) }
-            OutlinedButton(onClick = { if (confirm) { app.metrics.reset(); LiveMetrics.reset(); confirm = false } else confirm = true }) {
+            OutlinedButton(onClick = { if (confirm) { settingsAction("reset_stats"); app.metrics.reset(); LiveMetrics.reset(); confirm = false } else confirm = true }) {
                 Text(if (confirm) "Tap to confirm" else "Reset stats", color = Brand.Red)
             }
         }
-        TextButton(onClick = { showLogs = !showLogs }) { Text(if (showLogs) "Hide logs" else "Show logs (${logs.size})") }
+        TextButton(onClick = { if (!showLogs) settingsAction("show_logs"); showLogs = !showLogs }) { Text(if (showLogs) "Hide logs" else "Show logs (${logs.size})") }
         AnimatedVisibility(showLogs) {
             Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
                 Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState()).padding(10.dp)) {

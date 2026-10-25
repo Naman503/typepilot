@@ -76,6 +76,7 @@ import com.typepilot.android.engine.RewriteMode
 import com.typepilot.android.metrics.EventType
 import com.typepilot.android.metrics.MetricEvent
 import com.typepilot.android.ui.theme.Brand
+import com.typepilot.android.telemetry.Usage
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.catch
@@ -103,6 +104,8 @@ fun CompactAssistant(
     onNeedKeyboard: (Boolean) -> Unit = {},
     onDrag: ((Float, Float) -> Unit)? = null,
     onDragEnd: (() -> Unit)? = null,
+    /** For usage reporting only: floating (over an app) or sheet (text menu, share, shortcuts). */
+    surface: String = "floating",
 ) {
     val app = TypePilotApp.instance
     val context = LocalContext.current
@@ -121,6 +124,15 @@ fun CompactAssistant(
     val keyboard = LocalSoftwareKeyboardController.current
     /** The instruction box is live (window focusable + keyboard). Off by default so the app keeps the keyboard. */
     var typing by remember { mutableStateOf(false) }
+    var applied by remember { mutableStateOf(false) }
+    fun action(name: String) = Usage.count("ai_panel_action", mapOf("surface" to surface, "action" to name))
+    // Closed with a result that wasn't used: a discard (applied ones are reported as rewrite_applied / write_applied).
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            if (output.isNotBlank()) Usage.event("ai_result_closed", mapOf("surface" to surface,
+                "tab" to if (tab == RewriteBridge.Tab.REWRITE) "rewrite" else "write", "outcome" to if (applied) "applied" else "discarded"))
+        }
+    }
     LaunchedEffect(typing) {
         if (typing) { delay(150); runCatching { focus.requestFocus() }; keyboard?.show() }
     }
@@ -165,7 +177,7 @@ fun CompactAssistant(
                 if (onDrag != null) Icon(Icons.Default.DragHandle, "Drag", tint = MaterialTheme.colorScheme.outline, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Icon(Icons.Default.Close, "Close", tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(28.dp).clip(CircleShape).clickable { job?.cancel(); onClose() }.padding(5.dp))
+                    modifier = Modifier.size(28.dp).clip(CircleShape).clickable { if (busy) action("cancel"); job?.cancel(); onClose() }.padding(5.dp))
             }
             Spacer(Modifier.height(8.dp))
             if (configError != null) {
@@ -186,8 +198,8 @@ fun CompactAssistant(
                 }
             } else {
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    for (q in listOf("Reply to this", "Polite reply", "Short follow-up", "Thank you", "Say no politely", "Ask for an update")) {
-                        ModeChip(q, false) { request = q; write(q) }
+                    for ((i, q) in listOf("Reply to this", "Polite reply", "Short follow-up", "Thank you", "Say no politely", "Ask for an update").withIndex()) {
+                        ModeChip(q, false) { request = q; Usage.count("write_preset", mapOf("preset" to WRITE_PRESETS[i], "surface" to surface)); write(q) }
                     }
                 }
                 Spacer(Modifier.height(6.dp))
@@ -217,7 +229,7 @@ fun CompactAssistant(
                 }
                 Spacer(Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    for (l in WriteLength.entries) ModeChip(l.title, length == l) { length = l }
+                    for (l in WriteLength.entries) ModeChip(l.title, length == l) { if (length != l) action("length_${l.name.lowercase()}"); length = l }
                 }
             }
 
@@ -243,9 +255,10 @@ fun CompactAssistant(
                     }
                     Spacer(Modifier.height(6.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (history.isNotEmpty()) SmallIcon(Icons.AutoMirrored.Filled.Undo, "Undo") { output = history.removeAt(history.lastIndex) }
-                        SmallIcon(Icons.Default.Refresh, "Retry", enabled = !busy) { mode?.let { rewrite(it) } ?: write(request) }
+                        if (history.isNotEmpty()) SmallIcon(Icons.AutoMirrored.Filled.Undo, "Undo") { action("undo"); output = history.removeAt(history.lastIndex) }
+                        SmallIcon(Icons.Default.Refresh, "Retry", enabled = !busy) { action("retry"); mode?.let { rewrite(it) } ?: write(request) }
                         SmallIcon(Icons.Default.ContentCopy, "Copy", enabled = output.isNotBlank()) {
+                            action("copy")
                             context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("TypePilot", output))
                         }
                         if (busy) { Spacer(Modifier.width(6.dp)); CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp) }
@@ -255,6 +268,7 @@ fun CompactAssistant(
                                 .clickable(enabled = output.isNotBlank() && !busy) {
                                     app.metrics.record(MetricEvent(if (tab == RewriteBridge.Tab.REWRITE) EventType.REWRITE_APPLIED else EventType.WRITE_APPLIED,
                                         "ai", ctx.packageName, mode = mode?.name ?: length.name, chars = output.length))
+                                    applied = true
                                     onApply(output, tab == RewriteBridge.Tab.REWRITE)
                                 }.padding(horizontal = 16.dp, vertical = 7.dp)) {
                                 Text(if (tab == RewriteBridge.Tab.WRITE) "Insert" else actionLabel, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
@@ -293,3 +307,6 @@ private fun SmallIcon(icon: ImageVector, desc: String, enabled: Boolean = true, 
     Icon(icon, desc, tint = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.outlineVariant,
         modifier = Modifier.size(32.dp).clip(CircleShape).clickable(enabled = enabled, onClick = onClick).padding(7.dp))
 }
+
+/** The quick Write chips as fixed words for usage reporting (same order as the chips). */
+internal val WRITE_PRESETS = listOf("reply", "polite_reply", "follow_up", "thank_you", "decline", "ask_update")

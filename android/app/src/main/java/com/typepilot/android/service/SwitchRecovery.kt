@@ -37,9 +37,21 @@ class SwitchRecovery : BroadcastReceiver() {
                 scheduleBackup(app)
                 return
             }
-            A11ySwitch.turnOn(app)
+            com.typepilot.android.telemetry.Usage.expectAccessibilityChange("recovery")
+            val ok = A11ySwitch.turnOn(app)
+            com.typepilot.android.telemetry.Usage.count(if (ok) "smart_switch_restored" else "smart_switch_failed",
+                if (ok) mapOf("by" to recoveryReason(reason)) else mapOf("op" to "on"))
             cancelBackup(app)
             Log.i("switch", "accessibility restored ($reason)")
+        }
+
+        /** The trigger as a fixed word (it's an intent action or our own label). */
+        fun recoveryReason(reason: String): String = when (reason) {
+            Intent.ACTION_MY_PACKAGE_REPLACED -> "app_update"
+            Intent.ACTION_BOOT_COMPLETED -> "boot"
+            "alarm" -> "alarm"
+            "app start" -> "app_start"
+            else -> "other"
         }
 
         private fun pending(context: Context) = PendingIntent.getBroadcast(context, REQUEST,

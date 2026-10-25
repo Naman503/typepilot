@@ -27,9 +27,10 @@ import java.util.UUID
 
 /**
  * Anonymous usage reporting (Settings → Apps, memory & privacy → Share anonymous usage),
- * on by default. Sends feature names, daily counts, setup steps and crashes to
- * POST /v1/app/typepilot with a random install id. Never what you type, field contents,
- * app names, contacts, model hosts or keys. Turning it off deletes what was sent.
+ * on by default. Sends feature names, daily counts, setup steps, fixed-word settings, timing
+ * buckets, error categories and crashes to POST /v1/app/typepilot with a random install id.
+ * Never what you type, field contents, app or package names, contacts, model names, hosts or
+ * keys. Turning it off deletes what was sent. Most code reports through [Usage].
  *
  * Its state lives in its own "telemetry" prefs, outside Backup, so a restored phone gets
  * a new install id instead of the old one.
@@ -65,22 +66,35 @@ class UsageReporter(
         }
     }
 
-    /** Mirrors the Insights recorder, so reporting works even when local stats are off. */
+    /** Mirrors the Insights recorder, so reporting works even when local stats are off. High-frequency → daily counters. */
     fun onMetric(e: MetricEvent) {
+        val src = UsageMapping.source(e.source)
+        val app = UsageMapping.appCategory(e.app)
         when (e.type) {
-            EventType.SHOWN -> count("suggestions_shown")
+            EventType.SHOWN -> {
+                count("suggestions_shown", mapOf("source" to src, "app" to app))
+                if (e.latencyMs > 0) count("suggestion_latency", mapOf("source" to src, "latency" to UsageMapping.latency(e.latencyMs)))
+                once("first_suggestion")
+            }
             EventType.ACCEPTED -> {
-                count("suggestion_accepted", mapOf("source" to UsageMapping.source(e.source)))
+                count("suggestion_accepted", mapOf("source" to src, "app" to app))
                 once("first_accept")
             }
-            EventType.REWRITE -> event("rewrite_used", mapOf("mode" to UsageMapping.rewriteMode(e.mode)))
-            EventType.WRITE -> event("write_with_ai")
-            else -> Unit
+            EventType.WORD -> count("suggestion_word_accepted", mapOf("source" to src))
+            EventType.TYPED_THROUGH -> count("suggestion_typed_through", mapOf("source" to src))
+            EventType.DISMISSED -> count("suggestion_dismissed", mapOf("source" to src, "app" to app))
+            EventType.IGNORED -> count("suggestion_ignored", mapOf("source" to src, "app" to app))
+            EventType.REWRITE -> event("rewrite_used", mapOf("mode" to UsageMapping.rewriteMode(e.mode), "app" to app, "latency" to UsageMapping.latency(e.latencyMs)))
+            EventType.REWRITE_APPLIED -> event("rewrite_applied", mapOf("mode" to UsageMapping.rewriteMode(e.mode), "app" to app))
+            EventType.WRITE -> event("write_with_ai", mapOf("length" to e.mode.lowercase().ifBlank { "auto" }.take(12), "app" to app, "latency" to UsageMapping.latency(e.latencyMs)))
+            EventType.WRITE_APPLIED -> event("write_applied", mapOf("app" to app))
+            EventType.ERROR -> Unit // reported with its operation by the engine (ai_request / ai_error)
         }
     }
 
     fun event(name: String, props: Map<String, String> = emptyMap()) {
         if (!enabled) return
+        val props = UsageMapping.cleanProps(props)
         synchronized(lock) {
             val list = pending()
             if (list.length() >= MAX_PENDING) return
@@ -91,6 +105,7 @@ class UsageReporter(
 
     fun count(name: String, props: Map<String, String> = emptyMap(), n: Int = 1) {
         if (!enabled) return
+        val props = UsageMapping.cleanProps(props)
         synchronized(lock) {
             val c = counters()
             val key = UsageMapping.counterKey(today(), name, props)
@@ -100,14 +115,42 @@ class UsageReporter(
     }
 
     /** A milestone sent once per install (setup steps, first accepted suggestion). */
-    fun once(name: String) {
+    fun once(name: String, props: Map<String, String> = emptyMap()) {
         if (!enabled) return
         synchronized(lock) {
             val done = prefs.getStringSet(KEY_ONCE, emptySet()).orEmpty()
             if (name in done) return
             prefs.edit().putStringSet(KEY_ONCE, done + name).apply()
         }
-        event(name)
+        event(name, props)
+    }
+
+    /**
+     * Whether the accessibility service is on, reported only when it changes (so the admin sees users
+     * turning it off). [cause] is a fixed word: smart_switch, recovery, user_or_system, detected.
+     */
+    fun accessibilityState(on: Boolean, cause: String) {
+        val last = prefs.getString(KEY_A11Y, null)
+        val now = if (on) "on" else "off"
+        if (last == now) return
+        prefs.edit().putString(KEY_A11Y, now).apply()
+        if (last == null) return
+        // The smart switch flips it on every payment-app visit: those are counted, real changes are events.
+        if (cause == "smart_switch" || cause == "recovery") count("accessibility_changed", mapOf("state" to now, "cause" to cause))
+        else event("accessibility_changed", mapOf("state" to now, "cause" to cause))
+    }
+
+    /** A caught error worth knowing about: type + stack only, at most once per kind per day. */
+    fun nonFatal(t: Throwable, area: String) {
+        if (!enabled) return
+        val fp = UsageMapping.crashFingerprint(t)
+        synchronized(lock) {
+            val key = "${today()}|$fp"
+            val seen = prefs.getStringSet(KEY_NONFATAL, emptySet()).orEmpty().filter { it.startsWith(today()) }.toSet()
+            if (key in seen) return
+            prefs.edit().putStringSet(KEY_NONFATAL, seen + key).apply()
+        }
+        recordCrash(t, fatal = false, area = area)
     }
 
     /** Sharing switched off: forget the queue and ask the server to delete what this install sent. */
@@ -128,31 +171,38 @@ class UsageReporter(
             return@withContext
         }
         if (!enabled) return@withContext
-        dailyCheck()
-        val (body, sentCounters, sentEvents, sentCrashes) = synchronized(lock) {
-            val events = pending()
-            val c = counters()
-            val today = today()
-            val sentKeys = mutableListOf<String>()
-            for (key in c.keys()) {
-                val (day, name, props) = UsageMapping.parseCounterKey(key) ?: continue
-                if (day == today) continue // only finished days
-                events.put(JSONObject().put("n", name).put("t", noonOf(day)).put("c", c.getInt(key)).apply { if (props.isNotEmpty()) put("p", JSONObject(props)) })
-                sentKeys += key
+        runCatching { dailyCheck() }.onFailure { Log.w("usage", "daily check failed: ${it.javaClass.simpleName}") }
+        // The API takes at most 200 events and 64 KB per request: send in batches.
+        repeat(MAX_POSTS_PER_FLUSH) {
+            val (body, sentCounters, sentEvents, sentCrashes) = synchronized(lock) {
+                val queued = pending()
+                val events = JSONArray()
+                for (i in 0 until minOf(queued.length(), EVENTS_PER_POST)) events.put(queued.get(i))
+                val c = counters()
+                val today = today()
+                val sentKeys = mutableListOf<String>()
+                for (key in c.keys()) {
+                    if (events.length() >= EVENTS_PER_POST) break
+                    val (day, name, props) = UsageMapping.parseCounterKey(key) ?: continue
+                    if (day == today) continue // only finished days
+                    events.put(JSONObject().put("n", name).put("t", noonOf(day)).put("c", c.getInt(key).coerceIn(1, 1_000_000)).apply { if (props.isNotEmpty()) put("p", JSONObject(props)) })
+                    sentKeys += key
+                }
+                val allCrashes = crashes()
+                val crashes = JSONArray().apply { for (i in 0 until minOf(allCrashes.length(), CRASHES_PER_POST)) put(allCrashes.get(i)) }
+                Quad(base().put("e", events).put("cr", crashes), sentKeys, events.length() - sentKeys.size, crashes.length())
             }
-            val crashes = crashes()
-            Quad(base().put("e", events).put("cr", crashes), sentKeys, pending().length(), crashes.length())
-        }
-        if (sentCounters.isEmpty() && sentEvents == 0 && sentCrashes == 0) return@withContext
-        if (!post(body)) return@withContext
-        synchronized(lock) {
-            // Drop what was sent; anything queued meanwhile stays for next time.
-            val events = pending()
-            val rest = JSONArray().apply { for (i in sentEvents until events.length()) put(events.get(i)) }
-            val c = counters().apply { sentCounters.forEach { remove(it) } }
-            val cr = crashes()
-            val crRest = JSONArray().apply { for (i in sentCrashes until cr.length()) put(cr.get(i)) }
-            prefs.edit().putString(KEY_PENDING, rest.toString()).putString(KEY_COUNTERS, c.toString()).putString(KEY_CRASHES, crRest.toString()).apply()
+            if (sentCounters.isEmpty() && sentEvents == 0 && sentCrashes == 0) return@withContext
+            if (!post(body)) return@withContext
+            synchronized(lock) {
+                // Drop what was sent; anything queued meanwhile stays for next time.
+                val events = pending()
+                val rest = JSONArray().apply { for (i in sentEvents until events.length()) put(events.get(i)) }
+                val c = counters().apply { sentCounters.forEach { remove(it) } }
+                val cr = crashes()
+                val crRest = JSONArray().apply { for (i in sentCrashes until cr.length()) put(cr.get(i)) }
+                prefs.edit().putString(KEY_PENDING, rest.toString()).putString(KEY_COUNTERS, c.toString()).putString(KEY_CRASHES, crRest.toString()).apply()
+            }
         }
     }
 
@@ -176,15 +226,20 @@ class UsageReporter(
         }
     }
 
-    /** Exception type and stack only: messages can contain user text, so they are not sent. */
-    fun recordCrash(t: Throwable, fatal: Boolean) {
+    /**
+     * Exception type and stack only: messages can contain user text, so they are not sent. [area] is our own
+     * fixed log tag ("memory", "local"…), never anything from the user. A cause's type is added when there is one.
+     */
+    fun recordCrash(t: Throwable, fatal: Boolean, area: String? = null) {
         synchronized(lock) {
             val list = crashes()
             if (list.length() >= MAX_CRASHES) return
             val stack = t.stackTrace.take(25).joinToString("\n") { "at ${it.className}.${it.methodName}(${it.fileName}:${it.lineNumber})" }
+            val cause = t.cause?.takeIf { it !== t }?.javaClass?.name
+            val msg = listOfNotNull(area?.let { "[$it]" }, t.javaClass.name, cause?.let { "caused by $it" }).joinToString(" ")
             list.put(
-                JSONObject().put("fp", UsageMapping.crashFingerprint(t)).put("m", t.javaClass.name.take(200))
-                    .put("st", stack.take(4000)).put("t", System.currentTimeMillis()).put("fatal", fatal),
+                JSONObject().put("fp", UsageMapping.crashFingerprint(t)).put("m", msg.take(300))
+                    .put("st", stack.take(STACK_CHARS)).put("t", System.currentTimeMillis()).put("fatal", fatal),
             )
             // commit(): the process is about to die.
             prefs.edit().putString(KEY_CRASHES, list.toString()).commit()
@@ -228,8 +283,14 @@ class UsageReporter(
         private const val KEY_ONCE = "once"
         private const val KEY_DAILY = "daily_checked"
         private const val KEY_OFF_PENDING = "off_pending"
+        private const val KEY_A11Y = "a11y_state"
+        private const val KEY_NONFATAL = "nonfatal_seen"
         private const val MAX_PENDING = 500
         private const val MAX_CRASHES = 20
+        private const val EVENTS_PER_POST = 120
+        private const val CRASHES_PER_POST = 6
+        private const val STACK_CHARS = 3000
+        private const val MAX_POSTS_PER_FLUSH = 6
 
         private fun dayFormat() = SimpleDateFormat("yyyy-MM-dd", Locale.US)
         fun today(): String = dayFormat().format(Date())

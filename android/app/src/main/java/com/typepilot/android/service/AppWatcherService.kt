@@ -41,6 +41,12 @@ class AppWatcherService : Service() {
         return START_STICKY
     }
 
+    private fun restore(by: String) {
+        com.typepilot.android.telemetry.Usage.expectAccessibilityChange("smart_switch")
+        val ok = A11ySwitch.turnOn(this)
+        com.typepilot.android.telemetry.Usage.count(if (ok) "smart_switch_restored" else "smart_switch_failed", if (ok) mapOf("by" to by) else mapOf("op" to "on"))
+    }
+
     private suspend fun watch() {
         val app = TypePilotApp.instance
         val power = getSystemService(PowerManager::class.java)
@@ -48,11 +54,11 @@ class AppWatcherService : Service() {
             delay(800)
             if (!power.isInteractive) continue
             val s = app.settings.value
-            if (!s.smartSwitch || !A11ySwitch.canToggle(this)) { A11ySwitch.turnOn(this); break }
+            if (!s.smartSwitch || !A11ySwitch.canToggle(this)) { restore("watcher_disabled"); break }
             val fg = A11ySwitch.foregroundPackage(this) ?: continue
             if (fg == packageName) continue
             if (!s.hiddenIn(fg)) {
-                A11ySwitch.turnOn(this)
+                restore("watcher")
                 SwitchRecovery.cancelBackup(this)
                 Log.i("switch", "back on: $fg")
                 break
