@@ -36,12 +36,17 @@ import com.typepilot.android.ui.theme.TypePilotTheme
 class RewriteActivity : ComponentActivity() {
     private var processTextReadOnly = true
     private var fromProcessText = false
+    /** How the sheet was opened, as a fixed word for usage reporting. */
+    private var entry = "other"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         RewriteBridge.sheetOpen = true
         val request = buildRequest(intent)
+        if (savedInstanceState == null) com.typepilot.android.telemetry.Usage.event("assistant_opened", mapOf(
+            "surface" to "sheet", "entry" to entry, "tab" to if (request.tab == RewriteBridge.Tab.WRITE || request.text.isBlank()) "write" else "rewrite",
+            "app" to com.typepilot.android.telemetry.UsageMapping.appCategory(request.ctx.packageName)))
         setContent {
             TypePilotTheme {
                 val dismiss = remember { MutableInteractionSource() }
@@ -58,6 +63,7 @@ class RewriteActivity : ComponentActivity() {
                         onApply = { text, _ -> finishWith(text) },
                         onClose = { finishWith(null) },
                         maxHeight = maxH,
+                        surface = "sheet",
                         modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().imePadding()
                             .padding(horizontal = 10.dp, vertical = 12.dp)
                             .clickable(remember { MutableInteractionSource() }, indication = null) {},
@@ -76,13 +82,14 @@ class RewriteActivity : ComponentActivity() {
         return when (i.action) {
             Intent.ACTION_PROCESS_TEXT -> {
                 fromProcessText = true
+                entry = if (aliasMode == RewriteMode.GRAMMAR) "fix_grammar_menu" else "selection_menu"
                 processTextReadOnly = i.getBooleanExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, false)
                 val text = i.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString().orEmpty()
                 RewriteBridge.Request(text, FieldContext(packageName = caller, appName = appName(caller)), mode = aliasMode, actionLabel = "Replace")
             }
-            Intent.ACTION_SEND -> RewriteBridge.Request(i.getStringExtra(Intent.EXTRA_TEXT).orEmpty(), FieldContext(), actionLabel = "Copy")
-            else -> RewriteBridge.take() ?: RewriteBridge.Request(i.getStringExtra(EXTRA_TEXT).orEmpty(), FieldContext(),
-                tab = if (i.getStringExtra(EXTRA_TAB) == "write") RewriteBridge.Tab.WRITE else RewriteBridge.Tab.REWRITE)
+            Intent.ACTION_SEND -> { entry = "share"; RewriteBridge.Request(i.getStringExtra(Intent.EXTRA_TEXT).orEmpty(), FieldContext(), actionLabel = "Copy") }
+            else -> RewriteBridge.take()?.also { entry = "in_app" } ?: RewriteBridge.Request(i.getStringExtra(EXTRA_TEXT).orEmpty(), FieldContext(),
+                tab = if (i.getStringExtra(EXTRA_TAB) == "write") RewriteBridge.Tab.WRITE else RewriteBridge.Tab.REWRITE).also { entry = "shortcut" }
         }.let { r -> if (aliasMode != null) r.copy(mode = aliasMode) else r }
     }
 

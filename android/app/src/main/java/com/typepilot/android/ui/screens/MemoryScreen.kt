@@ -41,6 +41,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -90,6 +91,7 @@ fun MemoryScreen() {
             Tab(tab == 1, { tab = 1 }, text = { Text("Documents · ${counts.second}") })
             Tab(tab == 2, { tab = 2 }, text = { Text("Phrases · ${counts.third}") })
         }
+        LaunchedEffect(tab) { com.typepilot.android.telemetry.Usage.count("screen_view", mapOf("screen" to listOf("memory_facts", "memory_documents", "memory_phrases").getOrElse(tab) { "memory_facts" })) }
         when (tab) {
             0 -> FactsTab()
             1 -> DocumentsTab()
@@ -163,12 +165,12 @@ private fun FactsTab() {
             modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp))
     }
     editing?.let { f ->
-        FactDialog(f.key, f.value, f.aliases.joinToString(", "), onDismiss = { editing = null }, onDelete = { app.facts.delete(f.id); editing = null }) { k, v, a ->
-            app.facts.update(f.id, k, v, a); editing = null
+        FactDialog(f.key, f.value, f.aliases.joinToString(", "), onDismiss = { editing = null }, onDelete = { com.typepilot.android.telemetry.Usage.count("memory_edit", mapOf("item" to "fact", "action" to "delete")); app.facts.delete(f.id); editing = null }) { k, v, a ->
+            com.typepilot.android.telemetry.Usage.count("memory_edit", mapOf("item" to "fact", "action" to "edit")); app.facts.update(f.id, k, v, a); editing = null
         }
     }
     if (adding) FactDialog("", "", "", onDismiss = { adding = false }, onDelete = null) { k, v, a ->
-        app.facts.upsert(k, v, "manual", a, confidence = 0.95); adding = false
+        com.typepilot.android.telemetry.Usage.count("memory_edit", mapOf("item" to "fact", "action" to "add")); app.facts.upsert(k, v, "manual", a, confidence = 0.95); adding = false
     }
 }
 
@@ -214,6 +216,7 @@ private fun DocumentsTab() {
     val progress by app.knowledge.progress.collectAsState()
     val docs by produceState(emptyList<com.typepilot.android.knowledge.KnowledgeDoc>(), version, progress) { value = withContext(Dispatchers.IO) { app.facts.docs() } }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) com.typepilot.android.telemetry.Usage.count("memory_edit", mapOf("item" to "document", "action" to "add"), uris.size)
         for (u in uris) app.knowledge.import(u) { msg -> android.os.Handler(android.os.Looper.getMainLooper()).post { Toast.makeText(context, msg, Toast.LENGTH_LONG).show() } }
     }
     val aiName = remember { app.engine.writingModelOrNull()?.name }
@@ -244,8 +247,8 @@ private fun DocumentsTab() {
                             Text("${if (d.chars >= 1000) "${d.chars / 1000}k" else "${d.chars}"} characters · ${d.facts} facts · ${DateFormat.getDateInstance(DateFormat.SHORT).format(Date(d.added))}",
                                 fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        IconButton(onClick = { app.knowledge.reExtract(d.id) }) { Icon(Icons.Default.Refresh, "Read again") }
-                        IconButton(onClick = { app.facts.deleteDoc(d.id) }) { Icon(Icons.Default.Delete, "Delete", tint = Brand.Red) }
+                        IconButton(onClick = { com.typepilot.android.telemetry.Usage.count("memory_edit", mapOf("item" to "document", "action" to "reread")); app.knowledge.reExtract(d.id) }) { Icon(Icons.Default.Refresh, "Read again") }
+                        IconButton(onClick = { com.typepilot.android.telemetry.Usage.count("memory_edit", mapOf("item" to "document", "action" to "delete")); app.facts.deleteDoc(d.id) }) { Icon(Icons.Default.Delete, "Delete", tint = Brand.Red) }
                     }
                     val p = progress[d.id]
                     if (p != null) {
@@ -286,7 +289,7 @@ private fun PhrasesTab() {
                             if (e.field.isNotEmpty()) Pill(e.field.take(20), MaterialTheme.colorScheme.primary)
                             Text("×${e.count} · ${e.app.take(16)} · ${DateFormat.getDateInstance(DateFormat.SHORT).format(Date(e.lastUsed))}",
                                 fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f), maxLines = 1)
-                            IconButton(onClick = { app.memory.setPinned(e.id, !e.pinned) }) {
+                            IconButton(onClick = { com.typepilot.android.telemetry.Usage.count("memory_edit", mapOf("item" to "phrase", "action" to if (e.pinned) "unpin" else "pin")); app.memory.setPinned(e.id, !e.pinned) }) {
                                 Icon(if (e.pinned) Icons.Default.PushPin else Icons.Outlined.PushPin, "Pin", tint = if (e.pinned) Brand.Violet else MaterialTheme.colorScheme.outline)
                             }
                         }
@@ -303,13 +306,14 @@ private fun PhrasesTab() {
             modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp))
     }
     editing?.let { e ->
-        PhraseDialog(e.text, e.shortcut, e.field, onDismiss = { editing = null }, onDelete = { app.memory.delete(e.id); editing = null }) { text, sc, _ ->
-            if (text != e.text) app.memory.update(e.id, text)
-            if (sc != e.shortcut) app.memory.setShortcut(e.id, sc)
+        PhraseDialog(e.text, e.shortcut, e.field, onDismiss = { editing = null }, onDelete = { com.typepilot.android.telemetry.Usage.count("memory_edit", mapOf("item" to "phrase", "action" to "delete")); app.memory.delete(e.id); editing = null }) { text, sc, _ ->
+            if (text != e.text) { com.typepilot.android.telemetry.Usage.count("memory_edit", mapOf("item" to "phrase", "action" to "edit")); app.memory.update(e.id, text) }
+            if (sc != e.shortcut) { com.typepilot.android.telemetry.Usage.count("memory_edit", mapOf("item" to "phrase", "action" to if (sc.isBlank()) "shortcut_removed" else "shortcut_set")); app.memory.setShortcut(e.id, sc) }
             editing = null
         }
     }
     if (adding) PhraseDialog("", "", "", onDismiss = { adding = false }, onDelete = null) { text, sc, field ->
+        com.typepilot.android.telemetry.Usage.event("phrase_saved", mapOf("shortcut" to sc.isNotBlank().toString(), "field" to field.isNotBlank().toString()))
         app.memory.insertManual(text, field, sc); adding = false
     }
 }

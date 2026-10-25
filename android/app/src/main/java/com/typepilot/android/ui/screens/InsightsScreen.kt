@@ -95,6 +95,8 @@ fun InsightsScreen() {
     LaunchedEffect(Unit) { while (true) { delay(5_000); tick = app.metrics.version } }
 
     val r = Range.entries[range]
+    LaunchedEffect(tab) { com.typepilot.android.telemetry.Usage.count("screen_view", mapOf("screen" to listOf("insights_usage", "insights_performance", "insights_ai").getOrElse(tab) { "insights_usage" })) }
+    LaunchedEffect(range) { if (range != 1) com.typepilot.android.telemetry.Usage.count("insights_range", mapOf("range" to r.name.lowercase())) }
     val since = if (r == Range.TODAY) startOfToday() else System.currentTimeMillis() - r.days * 86_400_000L
     val data by produceState<UsageData?>(null, range, tick) {
         value = withContext(Dispatchers.IO) {

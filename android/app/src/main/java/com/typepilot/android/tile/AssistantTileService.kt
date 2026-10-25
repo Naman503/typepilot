@@ -10,6 +10,8 @@ class AssistantTileService : TileService() {
 
     override fun onClick() {
         val app = TypePilotApp.instance
+        val before = app.settings.value
+        com.typepilot.android.telemetry.Usage.count("tile_used", mapOf("action" to when { !before.enabled -> "turn_on"; before.isPaused -> "resume"; else -> "pause" }))
         app.settings.update {
             when {
                 !it.enabled -> it.copy(enabled = true, pausedUntil = 0)

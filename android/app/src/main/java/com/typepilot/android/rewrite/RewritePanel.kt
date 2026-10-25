@@ -67,6 +67,7 @@ import com.typepilot.android.metrics.EventType
 import com.typepilot.android.metrics.MetricEvent
 import com.typepilot.android.ui.components.Pill
 import com.typepilot.android.ui.theme.Brand
+import com.typepilot.android.telemetry.Usage
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
@@ -102,6 +103,14 @@ fun RewritePanel(
     val history = remember { mutableStateListOf<String>() }
     var job by remember { mutableStateOf<Job?>(null) }
     val configError = remember { app.engine.writingConfigError() }
+    val surface = "write_tab"
+    fun action(name: String) = Usage.count("ai_panel_action", mapOf("surface" to surface, "action" to name))
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            if (output.isNotBlank()) Usage.event("ai_result_closed", mapOf("surface" to surface,
+                "tab" to if (tab == RewriteBridge.Tab.REWRITE) "rewrite" else "write", "outcome" to "left"))
+        }
+    }
 
     fun runRewrite(m: RewriteMode) {
         if (source.isBlank()) return
@@ -148,7 +157,7 @@ fun RewritePanel(
         Spacer(Modifier.size(12.dp))
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
             RewriteBridge.Tab.entries.forEachIndexed { i, t ->
-                SegmentedButton(selected = tab == t, onClick = { tab = t; output = ""; error = null; history.clear() },
+                SegmentedButton(selected = tab == t, onClick = { if (tab != t) action("tab_${if (t == RewriteBridge.Tab.REWRITE) "rewrite" else "write"}"); tab = t; output = ""; error = null; history.clear() },
                     shape = SegmentedButtonDefaults.itemShape(i, 2)) { Text(if (t == RewriteBridge.Tab.REWRITE) "Rewrite" else "Write new") }
             }
         }
@@ -195,12 +204,12 @@ fun RewritePanel(
                 placeholder = { Text("e.g. a polite reply saying I'll send the report by Friday") })
             Spacer(Modifier.size(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                for (l in WriteLength.entries) FilterChip(selected = length == l, onClick = { length = l }, label = { Text(l.title) })
+                for (l in WriteLength.entries) FilterChip(selected = length == l, onClick = { if (length != l) action("length_${l.name.lowercase()}"); length = l }, label = { Text(l.title) })
             }
             Spacer(Modifier.size(8.dp))
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                for (q in listOf("Reply to this", "Polite reply", "Short follow-up", "Thank-you note", "Say no politely", "Ask for an update")) {
-                    Pill(q, MaterialTheme.colorScheme.primary) { request = q; runWrite() }
+                for ((i, q) in listOf("Reply to this", "Polite reply", "Short follow-up", "Thank-you note", "Say no politely", "Ask for an update").withIndex()) {
+                    Pill(q, MaterialTheme.colorScheme.primary) { request = q; Usage.count("write_preset", mapOf("preset" to WRITE_PRESETS[i], "surface" to surface)); runWrite() }
                 }
             }
             Spacer(Modifier.size(10.dp))
@@ -220,7 +229,7 @@ fun RewritePanel(
                                 val changes = remember(output, source) { WordDiff.changes(source, output) }
                                 Text("$changes change${if (changes == 1) "" else "s"}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Spacer(Modifier.width(6.dp))
-                                Switch(showDiff, { showDiff = it }, Modifier.size(width = 40.dp, height = 24.dp))
+                                Switch(showDiff, { showDiff = it; action(if (it) "diff_on" else "diff_off") }, Modifier.size(width = 40.dp, height = 24.dp))
                             }
                         }
                         Spacer(Modifier.size(8.dp))
@@ -241,17 +250,19 @@ fun RewritePanel(
                 }
                 Spacer(Modifier.size(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (history.isNotEmpty()) IconButton(onClick = { output = history.removeAt(history.lastIndex) }) { Icon(Icons.AutoMirrored.Filled.Undo, "Undo") }
-                    IconButton(onClick = { mode?.let { runRewrite(it) } ?: runWrite() }, enabled = !busy) { Icon(Icons.Default.Refresh, "Retry") }
+                    if (history.isNotEmpty()) IconButton(onClick = { action("undo"); output = history.removeAt(history.lastIndex) }) { Icon(Icons.AutoMirrored.Filled.Undo, "Undo") }
+                    IconButton(onClick = { action("retry"); mode?.let { runRewrite(it) } ?: runWrite() }, enabled = !busy) { Icon(Icons.Default.Refresh, "Retry") }
                     IconButton(onClick = {
+                        action("copy")
                         context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("TypePilot", output))
                     }, enabled = output.isNotBlank()) { Icon(Icons.Default.ContentCopy, "Copy") }
                     IconButton(onClick = {
+                        action("share")
                         context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, output), null)
                             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                     }, enabled = output.isNotBlank()) { Icon(Icons.Default.Share, "Share") }
                     if (tab == RewriteBridge.Tab.WRITE && output.isNotBlank() && !busy) {
-                        TextButton(onClick = { runWrite(output, "Make it shorter.") }) { Text("Shorter") }
+                        TextButton(onClick = { action("shorter"); runWrite(output, "Make it shorter.") }) { Text("Shorter") }
                     }
                     Spacer(Modifier.weight(1f))
                     if (onApply != null && actionLabel != null) {

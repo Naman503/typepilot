@@ -113,6 +113,7 @@ private fun withState(s: AppSettings, pkg: String, state: AppState): AppSettings
 
 @Composable
 private fun AppPicker(onBack: () -> Unit) {
+    androidx.compose.runtime.LaunchedEffect(Unit) { com.typepilot.android.telemetry.Usage.count("screen_view", mapOf("screen" to "app_picker")) }
     val app = TypePilotApp.instance
     val context = LocalContext.current
     val s by app.settings.state.collectAsState()

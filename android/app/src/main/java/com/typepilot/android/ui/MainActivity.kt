@@ -31,6 +31,8 @@ import com.typepilot.android.ui.screens.MemoryScreen
 import com.typepilot.android.ui.screens.SettingsScreen
 import com.typepilot.android.ui.screens.WriteScreen
 import com.typepilot.android.ui.theme.TypePilotTheme
+import com.typepilot.android.telemetry.Usage
+import androidx.compose.runtime.LaunchedEffect
 
 class MainActivity : ComponentActivity() {
     private var tabState = mutableStateOf(TAB_HOME)
@@ -38,11 +40,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        if (savedInstanceState == null) com.typepilot.android.TypePilotApp.instance.usage.event("app_open")
+        if (savedInstanceState == null) Usage.event("app_open", mapOf("from" to openedFrom(intent)))
         intent?.getStringExtra(EXTRA_TAB)?.let { tabState.value = it }
         setContent {
             TypePilotTheme {
                 var tab by tabState
+                LaunchedEffect(tab) { Usage.count("screen_view", mapOf("screen" to screenName(tab))) }
                 Scaffold(bottomBar = {
                     NavigationBar {
                         for ((id, label, icon) in tabs) {
@@ -64,8 +67,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        Usage.appVisible()
+    }
+
+    override fun onStop() {
+        Usage.appHidden()
+        super.onStop()
+    }
+
+    /** Launcher icon, a home-screen shortcut, or the keyboard's 🧠 / 📊 buttons (all open a tab). */
+    private fun openedFrom(i: Intent?): String = when {
+        i?.getStringExtra(EXTRA_TAB) == null -> "launcher"
+        i.action == Intent.ACTION_VIEW -> "shortcut"
+        else -> "keyboard"
+    }
+
+    private fun screenName(tab: String) = when (tab) { TAB_HOME, TAB_INSIGHTS, TAB_WRITE, TAB_MEMORY, TAB_SETTINGS -> tab; else -> "settings" }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        if (intent.getStringExtra(EXTRA_TAB) != null) Usage.event("app_open", mapOf("from" to openedFrom(intent)))
         intent.getStringExtra(EXTRA_TAB)?.let { tabState.value = it }
     }
 

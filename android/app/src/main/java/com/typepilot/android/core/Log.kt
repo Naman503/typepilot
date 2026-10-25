@@ -20,11 +20,16 @@ object Log {
     private val _lines = MutableStateFlow<List<Line>>(emptyList())
     val lines: StateFlow<List<Line>> = _lines
     @Volatile var verbose = false
+    /** Errors logged with an exception are also reported (type and stack only) when usage sharing is on. */
+    @Volatile var onError: ((area: String, t: Throwable) -> Unit)? = null
 
     fun d(area: String, msg: String) { if (verbose) add('D', area, msg) }
     fun i(area: String, msg: String) = add('I', area, msg)
     fun w(area: String, msg: String) = add('W', area, msg)
-    fun e(area: String, msg: String, t: Throwable? = null) = add('E', area, msg + (t?.let { ": ${it.message}" } ?: ""))
+    fun e(area: String, msg: String, t: Throwable? = null) {
+        add('E', area, msg + (t?.let { ": ${it.message}" } ?: ""))
+        if (t != null) runCatching { onError?.invoke(area, t) }
+    }
 
     private fun add(level: Char, area: String, msg: String) {
         when (level) {

@@ -101,6 +101,7 @@ fun ModelLibraryDialog(onDismiss: () -> Unit) {
 @Composable
 private fun ModelLibrary(onBack: () -> Unit) {
     val app = TypePilotApp.instance
+    androidx.compose.runtime.LaunchedEffect(Unit) { com.typepilot.android.telemetry.Usage.count("screen_view", mapOf("screen" to "model_library")) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val s by app.settings.state.collectAsState()
@@ -117,7 +118,8 @@ private fun ModelLibrary(onBack: () -> Unit) {
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch(Dispatchers.IO) {
             val name = (uri.lastPathSegment?.substringAfterLast('/') ?: "custom").let { if (it.endsWith(".litertlm")) it else "$it.litertlm" }
-            context.contentResolver.openInputStream(uri)?.use { input -> File(app.local.modelsDir, name).outputStream().use { input.copyTo(it, 1 shl 20) } }
+            val ok = runCatching { context.contentResolver.openInputStream(uri)?.use { input -> File(app.local.modelsDir, name).outputStream().use { input.copyTo(it, 1 shl 20) } } }.isSuccess
+            com.typepilot.android.telemetry.Usage.event("local_model", mapOf("action" to if (ok) "imported" else "import_failed", "catalog" to "false"))
             withContext(Dispatchers.Main) { refresh++ }
         }
     }
@@ -125,7 +127,9 @@ private fun ModelLibrary(onBack: () -> Unit) {
     fun benchmark(id: String) {
         benchmarking = id; benchError = null
         scope.launch {
-            runCatching { app.local.benchmark(id, s.localBackend) }.onFailure { benchError = it.message }
+            val t = runCatching { app.local.benchmark(id, s.localBackend) }.onFailure { benchError = it.message }
+            com.typepilot.android.telemetry.Usage.event("local_model", mapOf("action" to if (t.isSuccess) "benchmark" else "benchmark_failed", "catalog" to (LocalCatalog.byId(id) != null).toString(),
+                "backend" to (t.getOrNull()?.backend?.lowercase() ?: s.localBackend.name.lowercase())))
             benchmarking = null
         }
     }
@@ -201,7 +205,7 @@ private fun ModelLibrary(onBack: () -> Unit) {
         items(models, key = { it.id }) { m ->
             ModelCard(m, device, installed.contains(m.id), progress[m.id], bench[m.id], benchmarking == m.id, s,
                 onDownload = { app.downloader.start(m) }, onPause = { app.downloader.cancel(m.id) },
-                onDelete = { app.local.delete(m.id); refresh++ },
+                onDelete = { com.typepilot.android.telemetry.Usage.event("local_model", mapOf("action" to "deleted", "catalog" to "true")); app.local.delete(m.id); refresh++ },
                 onUseAuto = { set { it.copy(localModelId = m.id, completionProvider = ProviderKind.LOCAL) } },
                 onUseRewrite = { set { it.copy(localWritingModelId = m.id, writingProvider = ProviderKind.LOCAL) } },
                 onBenchmark = { benchmark(m.id) })

@@ -22,6 +22,7 @@ import com.typepilot.android.metrics.MetricEvent
 import com.typepilot.android.metrics.Stage
 import com.typepilot.android.rewrite.RewriteBridge
 import com.typepilot.android.text.SensitiveFilter
+import com.typepilot.android.telemetry.Usage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -65,6 +66,9 @@ class TypePilotAccessibilityService : AccessibilityService(), OverlayController.
     private var ownChangeUntil = 0L
     private var imeBounds: Rect? = null
     private val bubbleHiddenFor = HashSet<String>()
+    /** When the tracked field was entered (typing-session length), and where. */
+    private var fieldSince = 0L
+    private var fieldSincePkg = ""
     /** The fact last inserted into a field, to notice when you correct it. */
     private var acceptedFact: Triple<AccessibilityNodeInfo, Long, String>? = null
 
@@ -96,6 +100,7 @@ class TypePilotAccessibilityService : AccessibilityService(), OverlayController.
         // Reconnected while a hidden app is still in front? Switch straight off again.
         rootInActiveWindow?.packageName?.toString()?.let { if (it != packageName) switchOffIfHidden(it) }
         scope.launch(Dispatchers.IO) { app.engine.prewarm() }
+        Usage.accessibilityState(true)
         Log.i("service", "connected")
     }
 
@@ -118,7 +123,9 @@ class TypePilotAccessibilityService : AccessibilityService(), OverlayController.
         RewriteBridge.sheetOpen = false
         scope.cancel()
         LiveMetrics.updateStatus { it.copy(serviceConnected = false) }
+        endFieldSession()
         app.metrics.flush()
+        Usage.accessibilityState(false)
         Log.i("service", "disconnected")
     }
 
@@ -192,6 +199,7 @@ class TypePilotAccessibilityService : AccessibilityService(), OverlayController.
         val field = acceptField(node, pkg) ?: return
         if (field.sameAs(current) && (shown != null || overlay.isBubbleShowing)) return
         Log.d("focus", "rediscovered field '${field.label}' ($reason)")
+        if (!field.sameAs(current)) startFieldSession(field.pkg)
         current = field
         typedInCurrent = false
         focused(field)
@@ -232,7 +240,7 @@ class TypePilotAccessibilityService : AccessibilityService(), OverlayController.
         LiveMetrics.updateStatus { if (it.currentApp == field.appName) it else it.copy(currentApp = field.appName) }
 
         if (field.isPassword || SensitiveFilter.isSensitiveLabel(field.label)) {
-            if (!field.sameAs(current)) learnFrom(current)
+            if (!field.sameAs(current)) { learnFrom(current); endFieldSession() }
             current = field; typedInCurrent = false
             hideAll()
             return
@@ -240,6 +248,7 @@ class TypePilotAccessibilityService : AccessibilityService(), OverlayController.
         val prev = current
         if (!field.sameAs(prev)) {
             learnFrom(prev)
+            startFieldSession(field.pkg)
             current = field
             typedInCurrent = false
             focused(field)
@@ -384,6 +393,7 @@ class TypePilotAccessibilityService : AccessibilityService(), OverlayController.
         focusJob?.cancel()
         shown?.let { record(EventType.IGNORED, it) }
         learnFrom(current)
+        endFieldSession()
         current = null
         typedInCurrent = false
         screenContext = ""
@@ -437,6 +447,7 @@ class TypePilotAccessibilityService : AccessibilityService(), OverlayController.
         val isQuestion = com.typepilot.android.knowledge.FieldMatcher.concept(q) == null && (q.contains('?') || q.trim().split(Regex("""\s+""")).size >= 4)
         if (!s.aiAlongsideMemory || !isQuestion || ctx.textBefore.isNotBlank() || !keyboardUp()) return
         if (app.engine.modelFor(s.completionProvider)?.configError() != null) return
+        Usage.count("ai_answer_offered")
         aiOptionJob?.cancel()
         overlay.setAiOption(null, writing = true)
         aiOptionJob = scope.launch {
@@ -461,8 +472,9 @@ class TypePilotAccessibilityService : AccessibilityService(), OverlayController.
         aiOptionJob?.cancel()
         hideSuggestion()
         ownChangeUntil = SystemClock.uptimeMillis() + 600
-        if (TextApplier.insert(this, f, pick.text, pick.replaceLength) < 0) return
+        if (TextApplier.insert(this, f, pick.text, pick.replaceLength) < 0) { Usage.count("insert_failed", mapOf("kind" to "alternative")); return }
         app.metrics.record(MetricEvent(EventType.ACCEPTED, pick.source, sh.pkg, pick.provider, chars = pick.text.length, words = pick.words))
+        Usage.count("suggestion_alternative_accepted", mapOf("kind" to if (index < 0) "ai_answer" else "other_memory"))
         typedInCurrent = true
         if (pick.source == "fact" && pick.refId > 0) {
             app.scope.launch { app.facts.markUsed(pick.refId, f.pkg) }
@@ -538,7 +550,7 @@ class TypePilotAccessibilityService : AccessibilityService(), OverlayController.
         hideSuggestion()
         ownChangeUntil = SystemClock.uptimeMillis() + 600
         val caret = TextApplier.insert(this, f, sh.remaining, sh.suggestion.replaceLength)
-        if (caret < 0) { Toast.makeText(this, "This app didn't accept the text", Toast.LENGTH_SHORT).show(); return }
+        if (caret < 0) { Usage.count("insert_failed", mapOf("kind" to "suggestion")); Toast.makeText(this, "This app didn't accept the text", Toast.LENGTH_SHORT).show(); return }
         record(EventType.ACCEPTED, sh, sh.remaining)
         typedInCurrent = true
         if (sh.suggestion.source == "fact" && sh.suggestion.refId > 0) {
@@ -555,7 +567,7 @@ class TypePilotAccessibilityService : AccessibilityService(), OverlayController.
         val word = m.value
         val rest = sh.remaining.substring(word.length)
         ownChangeUntil = SystemClock.uptimeMillis() + 600
-        if (TextApplier.insert(this, f, word) < 0) return
+        if (TextApplier.insert(this, f, word) < 0) { Usage.count("insert_failed", mapOf("kind" to "word")); return }
         app.metrics.record(MetricEvent(EventType.WORD, sh.suggestion.source, sh.pkg, sh.suggestion.provider, chars = word.length, words = 1))
         typedInCurrent = true
         if (rest.isBlank()) { hideSuggestion(); return }
@@ -576,6 +588,7 @@ class TypePilotAccessibilityService : AccessibilityService(), OverlayController.
 
     override fun onBubbleMoved(xFrac: Float, yFrac: Float) {
         app.settings.update { it.copy(bubbleX = xFrac, bubbleY = yFrac) }
+        Usage.count("bubble_action", mapOf("action" to "moved"))
         Toast.makeText(this, "✦ stays here now. Reset it in TypePilot → Settings → Suggestions.", Toast.LENGTH_SHORT).show()
     }
 
@@ -586,6 +599,7 @@ class TypePilotAccessibilityService : AccessibilityService(), OverlayController.
     override fun onHideBubbleForApp() {
         current?.pkg?.let { bubbleHiddenFor += it }
         overlay.hideBubble()
+        Usage.count("bubble_action", mapOf("action" to "hide_for_app"))
         Toast.makeText(this, "✦ hidden in this app until restart. Turn it off for good in TypePilot settings.", Toast.LENGTH_SHORT).show()
     }
 
@@ -603,6 +617,10 @@ class TypePilotAccessibilityService : AccessibilityService(), OverlayController.
         if (imeBounds == null) imeBounds = currentImeBounds()
         // A small floating window over the app: the keyboard and the app stay visible.
         RewriteBridge.sheetOpen = true
+        Usage.count("bubble_action", mapOf("action" to "open"))
+        Usage.event("assistant_opened", mapOf("surface" to "floating", "entry" to "bubble",
+            "tab" to if (source.isBlank()) "write" else "rewrite", "selection" to hasSelection.toString(),
+            "app" to com.typepilot.android.telemetry.UsageMapping.appCategory(f.pkg)))
         assistant.show(RewriteBridge.Request(
             text = source,
             ctx = f.context(screen),
@@ -633,6 +651,7 @@ class TypePilotAccessibilityService : AccessibilityService(), OverlayController.
             val target = node.takeIf { it.refresh() && it.isEditable }
                 ?: rootInActiveWindow?.takeIf { it.packageName == pkg }?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
             if (target == null) {
+                Usage.count("insert_failed", mapOf("kind" to "assistant_copied"))
                 TextApplier.copy(this@TypePilotAccessibilityService, text)
                 Toast.makeText(this@TypePilotAccessibilityService, "Copied: paste it into the field", Toast.LENGTH_LONG).show()
                 return@launch
@@ -642,6 +661,7 @@ class TypePilotAccessibilityService : AccessibilityService(), OverlayController.
             val (a, b) = if (end <= full.length) start to end else 0 to full.length
             ownChangeUntil = SystemClock.uptimeMillis() + 800
             if (TextApplier.replaceRange(this@TypePilotAccessibilityService, target, full, a, b, text) < 0) {
+                Usage.count("insert_failed", mapOf("kind" to "assistant_copied"))
                 TextApplier.copy(this@TypePilotAccessibilityService, text)
                 Toast.makeText(this@TypePilotAccessibilityService, "Copied: paste it into the field", Toast.LENGTH_LONG).show()
             }
@@ -665,6 +685,7 @@ class TypePilotAccessibilityService : AccessibilityService(), OverlayController.
             if (node == field.node) {
                 if (app.settings.value.learnCorrections && text.trim().isNotEmpty() && !text.trim().equals(value, true)) {
                     app.scope.launch { app.facts.markRejected(id) }
+                    Usage.count("fact_corrected")
                     Log.d("memory", "correction: fact $id replaced by what you typed")
                 }
                 acceptedFact = null
@@ -681,11 +702,24 @@ class TypePilotAccessibilityService : AccessibilityService(), OverlayController.
         if (!s.hiddenIn(pkg) || !A11ySwitch.ready(this)) return false
         leaveField("switched off for $pkg")
         Log.i("switch", "off while $pkg is open")
-        app.usage.count("hidden_app_switch")
+        Usage.count("hidden_app_switch")
         AppWatcherService.start(this, appName(pkg))
         SwitchRecovery.scheduleBackup(this)
-        A11ySwitch.turnOff(this)
+        Usage.expectAccessibilityChange("smart_switch")
+        if (!A11ySwitch.turnOff(this)) Usage.count("smart_switch_failed", mapOf("op" to "off"))
         return true
+    }
+
+    private fun startFieldSession(pkg: String) {
+        endFieldSession()
+        fieldSince = SystemClock.elapsedRealtime()
+        fieldSincePkg = pkg
+    }
+
+    private fun endFieldSession() {
+        if (fieldSince == 0L) return
+        Usage.typingSession("overlay", fieldSincePkg, fieldSince, typedInCurrent)
+        fieldSince = 0L
     }
 
     private fun imePackage(): String =
